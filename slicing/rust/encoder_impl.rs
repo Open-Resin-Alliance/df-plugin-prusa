@@ -438,6 +438,100 @@ mod tests {
         assert_eq!((width, height), (4, 8), "layers are stored portrait");
     }
 
+    /// Twelve triangles of an axis-aligned box, the shape the engine's own
+    /// benchmark uses, small enough to slice in milliseconds.
+    fn cube_triangles(half_mm: f32, height_mm: f32) -> Vec<f32> {
+        let (x0, x1) = (-half_mm, half_mm);
+        let (y0, y1) = (-half_mm, half_mm);
+        let (z0, z1) = (0.0, height_mm);
+        let corners = [
+            [x0, y0, z0],
+            [x1, y0, z0],
+            [x1, y1, z0],
+            [x0, y1, z0],
+            [x0, y0, z1],
+            [x1, y0, z1],
+            [x1, y1, z1],
+            [x0, y1, z1],
+        ];
+        let faces = [
+            [0, 1, 2],
+            [0, 2, 3],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [1, 2, 6],
+            [1, 6, 5],
+            [2, 3, 7],
+            [2, 7, 6],
+            [3, 0, 4],
+            [3, 4, 7],
+        ];
+        let mut triangles = Vec::with_capacity(faces.len() * 9);
+        for face in faces {
+            for corner in face {
+                triangles.extend_from_slice(&corners[corner]);
+            }
+        }
+        triangles
+    }
+
+    #[test]
+    fn the_engine_slices_a_prusa_job_through_the_streaming_sink() {
+        let mut job = job(4, "sl1s");
+        job.source_width_px = 32;
+        job.source_height_px = 16;
+        job.width_px = 32;
+        job.height_px = 16;
+        job.build_width_mm = 1.6;
+        job.build_depth_mm = 0.8;
+        job.layer_height_mm = 0.05;
+        job.mirror_y = true;
+        job.metadata_json =
+            r#"{"material":{"normalExposureSec":2.2,"bottomExposureSec":6},"printer":{"name":"Original Prusa SL1S SPEED"}}"#
+                .to_string();
+        job.triangles_xyz = cube_triangles(0.5, 0.2);
+
+        let directory = std::env::temp_dir().join(format!(
+            "dragonfruit-prusa-smoke-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("temp dir");
+        let output_path = directory.join("engine-smoke.sl1s");
+        crate::engine::slice_with_progress_v3_to_path(&job, &output_path, None, None)
+            .expect("engine slice");
+
+        let bytes = std::fs::read(&output_path).expect("artifact");
+        let entries = entries(&bytes);
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "config.ini",
+                "engine-smoke00000.png",
+                "engine-smoke00001.png",
+                "engine-smoke00002.png",
+                "engine-smoke00003.png",
+            ]
+        );
+
+        let config = String::from_utf8(entries[0].1.clone()).expect("config text");
+        assert!(config.contains("jobDir = engine-smoke\n"), "{config}");
+        assert!(config.contains("printerModel = SL1S\n"), "{config}");
+        assert!(config.contains("layerHeight = 0.05\n"), "{config}");
+
+        let (width, height) = {
+            let decoder = png::Decoder::new(entries[1].1.as_slice());
+            let reader = decoder.read_info().expect("layer png");
+            let info = reader.info();
+            (info.width, info.height)
+        };
+        assert_eq!((width, height), (16, 32), "layers are stored portrait");
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
     #[test]
     fn a_missing_layer_fails_instead_of_shipping_an_empty_print() {
         let job = job(2, "sl1");
