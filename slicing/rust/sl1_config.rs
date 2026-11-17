@@ -112,7 +112,7 @@ impl Sl1Config {
             ("hollow".into(), "0".into()),
             ("jobDir".into(), self.job_dir.clone()),
             ("layerHeight".into(), number(self.layer_height_mm)),
-            ("numFade".into(), fade.to_string()),
+            ("numFade".into(), self.faded_layers.to_string()),
             ("numFast".into(), self.total_layers.to_string()),
             ("numSlow".into(), "0".into()),
             ("printTime".into(), "0".into()),
