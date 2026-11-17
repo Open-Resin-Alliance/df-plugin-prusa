@@ -37,7 +37,7 @@ use crate::rle::RleRun;
 use crate::types::{LayerAreaStatsV3, RenderedLayersV3, SliceJobV3};
 
 use self::sl1_config::{job_dir_name, Sl1Config};
-use self::sl1_png::{encode_portrait_png, expand_runs};
+use self::sl1_png::{encode_portrait_png_from_runs, runs_from_pixels};
 use self::sl1_types::Sl1Model;
 
 /// One encoder per extension the container is saved under.
@@ -97,8 +97,16 @@ impl Sl1RleStreamEncoder {
 fn encode_layer(job: &SliceJobV3, runs: &[RleRun]) -> Result<Vec<u8>, SlicerV3Error> {
     let width = job.effective_render_width_px();
     let height = job.source_height_px;
-    let landscape = expand_runs(width, height, runs);
-    encode_portrait_png(width, height, &landscape, &job.png_compression_strategy)
+    // A binary layer is read straight off the runs, which never materialises the
+    // frame. Anti-aliased layers need their pixels, because a run encoder cannot
+    // express the gradient; only those pay for the buffer.
+    encode_portrait_png_from_runs(
+        width,
+        height,
+        runs,
+        &job.png_compression_strategy,
+        job.produces_binary_output(),
+    )
 }
 
 impl RleStreamEncoder for Sl1RleStreamEncoder {
@@ -299,12 +307,14 @@ impl FormatEncoder for Sl1Encoder {
         let height = job.source_height_px;
         let mut layers = Vec::with_capacity(layer_pngs.len());
         for png_bytes in layer_pngs {
-            let landscape = decode_grayscale_layer(png_bytes, width, height)?;
-            layers.push(encode_portrait_png(
+            let pixels = decode_grayscale_layer(png_bytes, width, height)?;
+            let runs = runs_from_pixels(&pixels);
+            layers.push(encode_portrait_png_from_runs(
                 width,
                 height,
-                &landscape,
+                &runs,
                 &job.png_compression_strategy,
+                job.produces_binary_output(),
             )?);
         }
 

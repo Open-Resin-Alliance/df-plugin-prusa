@@ -70,9 +70,11 @@ test('the plugin exposes one preset per machine with its real geometry', () => {
     assert.equal(preset.display.settingsMode, expected.settingsMode);
     assert.equal(preset.display.mirrorY, expected.mirrorY);
     assert.equal(preset.display.mirrorX, false);
+    // The runtime registry keys plugin assets by the plugin version, so a replaced
+    // image is a new URL and a webview cache cannot pin the old one.
     assert.equal(
       preset.imageAssetPath,
-      `/api/profile-assets/plugins/prusa/printers/assets/${expected.asset}`,
+      `/api/profile-assets/plugins/prusa/printers/assets/${expected.asset}?v=${PRUSA_PLUGIN_MANIFEST.version}`,
     );
 
     // Pitch x pixels must match the advertised volume; a mismatch means one was

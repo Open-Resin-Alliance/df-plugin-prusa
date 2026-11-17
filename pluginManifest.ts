@@ -43,7 +43,7 @@ export const PRUSA_PLUGIN_MANIFEST = {
   schemaVersion: 1,
   id: 'prusa-builtin',
   name: 'Prusa Research Plugin',
-  version: '0.1.0',
+  version: '0.1.1',
   description: 'Original Prusa SL1, SL1S SPEED and Prusa Pro SLX profiles and the Prusa SLA print container.',
   author: 'Open Resin Alliance',
   homepage: 'https://github.com/Open-Resin-Alliance/df-plugin-prusa',

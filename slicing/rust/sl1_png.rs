@@ -6,18 +6,27 @@
 //! portrait, `height_px × width_px`, with the plate's front-left corner at the
 //! image's bottom-right (PrusaSlicer's layer rasterizer sets that up with
 //! `flipXY` plus its default X mirror, which is why the profiles' `mirrorY` is
-//! what makes the two machines agree). So every layer is expanded once and
-//! rotated a quarter turn counter-clockwise while its PNG scanlines are built.
+//! what makes the two machines agree). So every layer is rotated a quarter turn
+//! counter-clockwise on its way into the PNG scanlines.
 //!
-//! The rotation is folded into the filter pass: no portrait pixel buffer is ever
-//! materialised, only the filtered scanlines that are about to be deflated. At
-//! 8K that is the difference between one 33 MB buffer per worker and two. The PNG
-//! assembly below mirrors `crate::encode`'s grayscale writer - signature, IHDR,
-//! one IDAT, IEND, Sub filtering unless the job asked for `fastest` - because the
-//! engine's helper writes rows in source order and cannot express the rotation.
+//! The rotation is read off the run table rather than performed on pixels. A
+//! landscape run makes a contiguous span of source columns constant for its own
+//! row, so a portrait row - one source column, all source rows - can be walked by
+//! consulting each source row's spans in turn. The output rows visit their columns
+//! right to left, so each row's cursor only ever steps back and the whole pass is
+//! O(H·W) pointer checks over a cache-resident run table, with no 33 MB frame ever
+//! materialised. Columns no non-zero run touches are emitted as one run of black
+//! without a walk at all.
 //!
-//! `crc32fast` and `libdeflater` are engine dependencies, so this module adds no
-//! crate to the build.
+//! Two writers sit behind that sweep:
+//!
+//! - **Binary layers** (anti-aliasing off, every pixel 0 or 255) are re-expressed
+//!   as portrait runs and handed to `crate::encode::encode_grayscale_png_from_rle`,
+//!   the engine's O(runs) fixed-Huffman PNG writer, the same path Athena's layers
+//!   take. At 8K a layer costs ~18 ms here against ~90 ms for a full-frame
+//!   transpose, and it allocates no frame at all.
+//! - **Anti-aliased layers** keep Sub-filtered libdeflate. A run encoder cannot
+//!   express an edge gradient, so their scanlines are written one value at a time.
 
 use crc32fast::Hasher as Crc32Hasher;
 use libdeflater::{CompressionLvl, Compressor};
@@ -27,81 +36,209 @@ use crate::rle::RleRun;
 
 const PNG_SIG: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
-/// Expand a layer's runs into its `width * height` landscape pixels.
-///
-/// Runs arrive row-major over the whole frame and never span more than one layer.
-/// A short stream leaves the remaining pixels black, which is what an
-/// under-delivered layer should print as - the engine refuses a missing layer, so
-/// this is only the tail of the last row.
-pub(super) fn expand_runs(width: u32, height: u32, runs: &[RleRun]) -> Vec<u8> {
-    let total = width as usize * height as usize;
-    let mut pixels = vec![0u8; total];
-    let mut offset = 0usize;
-    for run in runs {
-        if offset >= total {
-            break;
-        }
-        let end = (offset + run.length as usize).min(total);
-        pixels[offset..end].fill(run.value);
-        offset = end;
-    }
-    pixels
+/// One constant span of one landscape row.
+#[derive(Clone, Copy)]
+struct Span {
+    start: u32,
+    end: u32,
+    value: u8,
 }
 
-/// Encode one landscape layer whose pixels are already expanded.
+/// Encode a layer straight from its landscape runs.
 ///
-/// Output is `height × width` (portrait), 8-bit grayscale, non-interlaced.
-pub(super) fn encode_portrait_png(
+/// Output is `height × width` (portrait), 8-bit grayscale, non-interlaced;
+/// `binary` selects the run writer over the gradient writer.
+pub(super) fn encode_portrait_png_from_runs(
     width: u32,
     height: u32,
-    landscape: &[u8],
+    runs: &[RleRun],
     png_compression_strategy: &str,
+    binary: bool,
 ) -> Result<Vec<u8>, SlicerV3Error> {
     if width == 0 || height == 0 {
         return Err(SlicerV3Error::InvalidDimensions { width, height });
     }
-    let expected = width as usize * height as usize;
-    if landscape.len() != expected {
-        return Err(SlicerV3Error::Png(format!(
-            "layer buffer is {} bytes, expected {expected} for {width}x{height}",
-            landscape.len()
-        )));
+
+    if binary {
+        let (rows, covered_columns) = row_spans(width as usize, height as usize, runs);
+        let portrait = portrait_runs(width as usize, height as usize, &rows, &covered_columns);
+        return crate::encode::encode_grayscale_png_from_rle(
+            height,
+            width,
+            &portrait,
+            png_compression_strategy,
+            true,
+        );
     }
 
-    let out_width = height as usize;
-    let out_height = width as usize;
-    let use_sub = !matches!(png_compression_strategy, "fastest");
-    let row_bytes = 1 + out_width;
-    let mut filtered = vec![0u8; row_bytes * out_height];
-
-    // new[row = r][col = c] = landscape[row = c][col = width - 1 - r]: a quarter
-    // turn counter-clockwise. The read runs down a column of the source, so each
-    // output row is one strided walk.
-    for r in 0..out_height {
-        let source_column = width as usize - 1 - r;
-        let row = &mut filtered[r * row_bytes..(r + 1) * row_bytes];
-        row[0] = if use_sub { 1 } else { 0 };
-        if use_sub {
-            let mut previous = 0u8;
-            for c in 0..out_width {
-                let value = landscape[c * width as usize + source_column];
-                row[c + 1] = value.wrapping_sub(previous);
-                previous = value;
-            }
-        } else {
-            for c in 0..out_width {
-                row[c + 1] = landscape[c * width as usize + source_column];
-            }
-        }
-    }
-
+    let (rows, covered_columns) = row_spans(width as usize, height as usize, runs);
+    let filtered = portrait_filtered(
+        width as usize,
+        height as usize,
+        &rows,
+        &covered_columns,
+        !matches!(png_compression_strategy, "fastest"),
+    );
     let compressed = zlib_compress(&filtered, png_compression_level(png_compression_strategy))?;
+
     let mut out = Vec::with_capacity(8 + 25 + 12 + compressed.len() + 12);
     out.extend_from_slice(&PNG_SIG);
-    write_ihdr(&mut out, out_width as u32, out_height as u32);
+    write_ihdr(&mut out, height, width);
     write_chunk(&mut out, b"IDAT", &compressed);
     write_chunk(&mut out, b"IEND", &[]);
     Ok(out)
+}
+
+/// Group the landscape runs by row and mark the columns any non-zero run covers.
+fn row_spans(width: usize, height: usize, runs: &[RleRun]) -> (Vec<Vec<Span>>, Vec<bool>) {
+    let mut rows: Vec<Vec<Span>> = vec![Vec::new(); height];
+    let mut covered_columns = vec![false; width];
+    let mut offset = 0usize;
+    for run in runs {
+        let mut remaining = run.length as usize;
+        while remaining > 0 {
+            let row = offset / width;
+            if row >= height {
+                break;
+            }
+            let column = offset % width;
+            let take = remaining.min(width - column);
+            rows[row].push(Span {
+                start: column as u32,
+                end: (column + take) as u32,
+                value: run.value,
+            });
+            if run.value != 0 {
+                covered_columns[column..column + take].fill(true);
+            }
+            offset += take;
+            remaining -= take;
+        }
+    }
+    (rows, covered_columns)
+}
+
+/// The portrait image's runs.
+fn portrait_runs(
+    width: usize,
+    height: usize,
+    rows: &[Vec<Span>],
+    covered_columns: &[bool],
+) -> Vec<RleRun> {
+    let mut out = Vec::with_capacity(width * 2);
+    // Spans are ascending and the output rows visit their columns from right to
+    // left, so each row's cursor only ever steps back. `cursors[v]` is the count
+    // of spans in row `v` whose start is at or before the current column.
+    let mut cursors: Vec<usize> = rows.iter().map(Vec::len).collect();
+    for output_row in 0..width {
+        let column = width - 1 - output_row;
+        if !covered_columns[column] {
+            out.push(RleRun {
+                length: height as u32,
+                value: 0,
+            });
+            continue;
+        }
+
+        let mut value = 0u8;
+        let mut length = 0u32;
+        let mut started = false;
+        for source_row in 0..height {
+            let spans = &rows[source_row];
+            let mut cursor = cursors[source_row];
+            while cursor > 0 && spans[cursor - 1].start as usize > column {
+                cursor -= 1;
+            }
+            cursors[source_row] = cursor;
+            let next = if cursor > 0 && (spans[cursor - 1].end as usize) > column {
+                spans[cursor - 1].value
+            } else {
+                0
+            };
+
+            if started && next == value {
+                length += 1;
+            } else {
+                if started {
+                    out.push(RleRun { length, value });
+                }
+                value = next;
+                length = 1;
+                started = true;
+            }
+        }
+        out.push(RleRun { length, value });
+    }
+    out
+}
+
+/// The portrait image's PNG scanlines: one filter byte plus the row, in order.
+fn portrait_filtered(
+    width: usize,
+    height: usize,
+    rows: &[Vec<Span>],
+    covered_columns: &[bool],
+    use_sub: bool,
+) -> Vec<u8> {
+    let row_bytes = 1 + height;
+    let mut filtered = vec![0u8; row_bytes * width];
+    let mut cursors: Vec<usize> = rows.iter().map(Vec::len).collect();
+    let mut row_values = vec![0u8; height];
+    for output_row in 0..width {
+        let column = width - 1 - output_row;
+        let target = &mut filtered[output_row * row_bytes..(output_row + 1) * row_bytes];
+        target[0] = if use_sub { 1 } else { 0 };
+        if !covered_columns[column] {
+            continue;
+        }
+
+        for source_row in 0..height {
+            let spans = &rows[source_row];
+            let mut cursor = cursors[source_row];
+            while cursor > 0 && spans[cursor - 1].start as usize > column {
+                cursor -= 1;
+            }
+            cursors[source_row] = cursor;
+            row_values[source_row] =
+                if cursor > 0 && (spans[cursor - 1].end as usize) > column {
+                    spans[cursor - 1].value
+                } else {
+                    0
+                };
+        }
+
+        if use_sub {
+            target[1] = row_values[0];
+            for source_row in 1..height {
+                target[source_row + 1] =
+                    row_values[source_row].wrapping_sub(row_values[source_row - 1]);
+            }
+        } else {
+            target[1..].copy_from_slice(&row_values);
+        }
+    }
+    filtered
+}
+
+/// A flat pixel row stream as runs, for the fallback that receives PNG layers.
+pub(super) fn runs_from_pixels(pixels: &[u8]) -> Vec<RleRun> {
+    let mut runs = Vec::new();
+    let Some(&first) = pixels.first() else {
+        return runs;
+    };
+    let mut value = first;
+    let mut length = 1u32;
+    for &next in &pixels[1..] {
+        if next == value {
+            length += 1;
+        } else {
+            runs.push(RleRun { length, value });
+            value = next;
+            length = 1;
+        }
+    }
+    runs.push(RleRun { length, value });
+    runs
 }
 
 /// Same ladder `crate::encode` uses for the other formats' layers.
@@ -170,9 +307,11 @@ mod tests {
 
     #[test]
     fn rotates_a_landscape_layer_counter_clockwise() {
-        // 4 wide x 2 tall landscape, each value distinct.
-        let landscape = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let png = encode_portrait_png(4, 2, &landscape, "balanced").expect("encode");
+        // 4 wide x 2 tall landscape, one run per pixel, all distinct.
+        let runs: Vec<RleRun> = (1..=8)
+            .map(|value| RleRun { length: 1, value })
+            .collect();
+        let png = encode_portrait_png_from_runs(4, 2, &runs, "balanced", false).expect("encode");
         let (width, height, pixels) = decode_grayscale(&png);
         assert_eq!((width, height), (2, 4));
         // A quarter turn CCW: the right-hand column becomes the top row.
@@ -180,30 +319,78 @@ mod tests {
     }
 
     #[test]
-    fn expansive_runs_fill_the_frame_and_leave_the_tail_black() {
-        let pixels = expand_runs(
-            3,
-            2,
-            &[
-                RleRun { length: 2, value: 255 },
-                RleRun { length: 1, value: 17 },
-            ],
-        );
-        assert_eq!(pixels, vec![255, 255, 17, 0, 0, 0]);
-    }
-
-    #[test]
-    fn rejects_a_buffer_that_does_not_match_the_frame() {
-        let error = encode_portrait_png(4, 2, &[0u8; 7], "balanced").expect_err("short buffer");
-        assert!(matches!(error, SlicerV3Error::Png(_)));
-    }
-
-    #[test]
-    fn fastest_strategy_skips_sub_filtering_but_still_round_trips() {
-        let landscape = vec![0, 255, 0, 255, 255, 0, 255, 0];
-        let png = encode_portrait_png(4, 2, &landscape, "fastest").expect("encode");
+    fn binary_layers_take_the_run_writer_and_rotate_the_same_way() {
+        // Landscape: [0, 255, 0, 255] over [255, 0, 255, 0].
+        let runs = [
+            RleRun { length: 1, value: 0 },
+            RleRun { length: 1, value: 255 },
+            RleRun { length: 1, value: 0 },
+            RleRun { length: 2, value: 255 },
+            RleRun { length: 1, value: 0 },
+            RleRun { length: 1, value: 255 },
+            RleRun { length: 1, value: 0 },
+        ];
+        let png = encode_portrait_png_from_runs(4, 2, &runs, "balanced", true).expect("encode");
         let (width, height, pixels) = decode_grayscale(&png);
         assert_eq!((width, height), (2, 4));
         assert_eq!(pixels, vec![255, 0, 0, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn the_two_writers_agree_on_a_binary_layer() {
+        let runs = [
+            RleRun { length: 2, value: 0 },
+            RleRun { length: 2, value: 255 },
+            RleRun { length: 1, value: 255 },
+            RleRun { length: 3, value: 0 },
+        ];
+        let binary = encode_portrait_png_from_runs(4, 2, &runs, "balanced", true).expect("binary");
+        let gradient = encode_portrait_png_from_runs(4, 2, &runs, "balanced", false).expect("gradient");
+        assert_eq!(decode_grayscale(&binary), decode_grayscale(&gradient));
+    }
+
+    #[test]
+    fn an_uncovered_column_is_emitted_black_without_a_walk() {
+        // Row 0: [10, 10, 200, 200]; row 1: [10, 200, 200, 200].
+        let runs = [
+            RleRun { length: 2, value: 10 },
+            RleRun { length: 2, value: 200 },
+            RleRun { length: 1, value: 10 },
+            RleRun { length: 3, value: 200 },
+        ];
+        let png = encode_portrait_png_from_runs(4, 2, &runs, "balanced", false).expect("encode");
+        let (width, height, pixels) = decode_grayscale(&png);
+        assert_eq!((width, height), (2, 4));
+        assert_eq!(pixels, vec![200, 200, 200, 200, 10, 200, 10, 10]);
+
+        // A layer with no non-zero run is all black, whatever its size.
+        let png = encode_portrait_png_from_runs(8, 4, &[RleRun { length: 32, value: 0 }], "balanced", true)
+            .expect("empty");
+        let (_, _, pixels) = decode_grayscale(&png);
+        assert!(pixels.iter().all(|&value| value == 0));
+    }
+
+    #[test]
+    fn a_short_stream_leaves_the_rest_black() {
+        // One run covers the first row only; the second row must come out black.
+        let runs = [RleRun { length: 4, value: 255 }];
+        let png = encode_portrait_png_from_runs(4, 2, &runs, "balanced", true).expect("encode");
+        let (_, _, pixels) = decode_grayscale(&png);
+        assert_eq!(pixels, vec![255, 0, 255, 0, 255, 0, 255, 0]);
+    }
+
+    #[test]
+    fn runs_from_pixels_matches_the_stream_the_engine_sends() {
+        let runs = runs_from_pixels(&[0, 0, 5, 5, 5, 255]);
+        assert_eq!(runs.len(), 3);
+        assert_eq!((runs[0].length, runs[0].value), (2, 0));
+        assert_eq!((runs[1].length, runs[1].value), (3, 5));
+        assert_eq!((runs[2].length, runs[2].value), (1, 255));
+    }
+
+    #[test]
+    fn rejects_a_zero_sized_frame() {
+        let error = encode_portrait_png_from_runs(0, 4, &[], "balanced", true).expect_err("empty");
+        assert!(matches!(error, SlicerV3Error::InvalidDimensions { .. }));
     }
 }
