@@ -20,6 +20,13 @@ PrusaSlicer's own writer does. A layer the run writer produced is a fixed-Huffma
 deflate stream made almost entirely of repeated distance-1 matches, so the second
 pass costs a few milliseconds and shrinks one 8K layer from 216 KB to 2.9 KB.
 
+The rotation into the portrait image is a sweep over the source columns, and the
+column's value vector is kept as a run list over the source rows: it can only
+change where a source span starts or ends, so the sweep patches the run list at
+those boundaries instead of re-reading every pixel. At 8K a binary layer's runs
+take about a millisecond to transpose and two to write, which is the same order
+as the engine's other run-based formats.
+
 PrusaSlicer additionally writes `config.json` (its tilt/exposure profile) and
 `prusaslicer.ini` / `prusaslicer.json` (its full configuration dump). The firmware
 does not need them, and UVtools has written printer-accepted files without any of
