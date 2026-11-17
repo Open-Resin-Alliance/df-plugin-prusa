@@ -3,7 +3,7 @@
     "presetId": "prusa-pro-slx",
     "profileVersion": 1,
     "manufacturer": "Prusa Research",
-    "family": "Prusa Pro SLX",
+    "family": "Prusa Pro",
     "name": "Prusa Pro SLX",
     "imageAssetPath": "./assets/prusa-slx.png",
     "antiAliasing": true,

@@ -3,7 +3,7 @@
     "presetId": "prusa-sl1s-speed",
     "profileVersion": 1,
     "manufacturer": "Prusa Research",
-    "family": "Original Prusa SL1S",
+    "family": "Original Prusa SL1",
     "name": "Original Prusa SL1S SPEED",
     "imageAssetPath": "./assets/prusa-sl1s.png",
     "antiAliasing": true,
