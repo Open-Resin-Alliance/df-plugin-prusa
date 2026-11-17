@@ -199,21 +199,31 @@ fn write_archive<W: Write + Seek>(
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(i64::from(job.container_compression_level.min(9))));
 
-    zip.start_file("config.ini", text_options)?;
+    start_entry(&mut zip, "config.ini", text_options)?;
     zip.write_all(config.render(model).as_bytes())?;
 
     for (index, png) in layers.iter().enumerate() {
-        zip.start_file(format!("{job_dir}{index:05}.png"), layer_options)?;
+        start_entry(&mut zip, &format!("{job_dir}{index:05}.png"), layer_options)?;
         zip.write_all(png)?;
     }
 
     for (name, png) in sl1_thumbnail::thumbnails(job) {
-        zip.start_file(name, layer_options)?;
+        start_entry(&mut zip, &name, layer_options)?;
         zip.write_all(&png)?;
     }
 
     zip.finish()?;
     Ok(())
+}
+
+/// Start one archive entry, naming it when the writer refuses.
+fn start_entry<W: Write + Seek>(
+    zip: &mut ZipWriter<W>,
+    name: &str,
+    options: SimpleFileOptions,
+) -> Result<(), SlicerV3Error> {
+    zip.start_file(name, options)
+        .map_err(|error| SlicerV3Error::Zip(format!("{name}: {error}")))
 }
 
 /// Decode a layer PNG the engine rendered outside the streaming path.
