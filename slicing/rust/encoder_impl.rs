@@ -338,7 +338,7 @@ mod tests {
         let mut found = Vec::new();
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).expect("entry");
-            let name = entry.name().to_string();
+            let name = entry.name().expect("entry name").to_string();
             let mut data = Vec::new();
             entry.read_to_end(&mut data).expect("entry data");
             found.push((name, data));
