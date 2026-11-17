@@ -28,41 +28,46 @@ take about a millisecond to transpose and two to write, which is the same order
 as the engine's other run-based formats.
 
 PrusaSlicer additionally writes `config.json` (its tilt/exposure profile) and
-`prusaslicer.ini` / `prusaslicer.json` (its full configuration dump). The firmware
-does not need them, and UVtools has written printer-accepted files without any of
-the four, which is why this encoder writes only `config.ini` and the images:
-`config.json` describes motion curves that this plugin does not model, and
-inventing them would change how the vat tilts.
+`prusaslicer.ini` / `prusaslicer.json` (its full configuration dump). The SL1 and
+SL1S run without any of them - UVtools has written accepted SL1S files for years
+with only `config.ini` - so this encoder writes `config.ini` for every machine and
+adds `config.json` only for the SLX, whose firmware reads its peel profile from it.
+The profile's constants are lifted from a job PrusaSlicer 2.9.6 wrote for the SLX,
+because the SLX printer preset is not public; they describe the machine's tilt, not
+the resin, so every print carries the same ones. `prusaslicer.ini`/`.json` are
+PrusaSlicer's own dump and are not written.
 
 ## Layer images
 
 A layer PNG is exactly one display frame at the machine's raster resolution, 8-bit
 grayscale, non-interlaced, where `255` solidly cures and `0` does not, and the
-values between carry anti-aliasing. PrusaSlicer writes them portrait:
+values between carry anti-aliasing.
 
-| Machine | File dimensions | Pixel pitch |
-| --- | --- | --- |
-| SL1 | 1440 × 2560 | 47.25 µm |
-| SL1S | 1620 × 2560 | 50 µm |
-| SLX | 4320 × 7680 | ≈ 28.8 µm |
+| Machine | File dimensions | Orientation | Pixel pitch |
+| --- | --- | --- | --- |
+| SL1 | 1440 × 2560 | portrait | 47.25 µm |
+| SL1S | 1620 × 2560 | portrait | 50 µm |
+| SLX | 7680 × 4320 | landscape | ≈ 28.8 µm |
 
-DragonFruit's engine rasterises the plate landscape, in the printer profile's
+DragonFruit's engine rasterises the plate in the printer profile's
 `resolutionX × resolutionY`, with the plate's front edge at the bottom of the
-image. PrusaSlicer's rasterizer rotates the plate a quarter turn and applies the
-mirroring its printer profile declares (`Trafo` in
+image. PrusaSlicer's rasterizer applies the mirroring its printer profile declares
+and, for a portrait display, a quarter-turn rotation (`Trafo` in
 `src/libslic3r/src/libslic3r/SLA/RasterBase.hpp`):
 
-- the SL1 profile declares no mirror, so the portrait image is a quarter turn
-  counter-clockwise of DragonFruit's landscape frame with `mirrorY` **off**;
-- the SL1S profile declares `display_mirror_x = 1`, which cancels the implicit X
-  mirror the portrait rotation adds, i.e. one further flip of the landscape frame:
-  `mirrorY` **on**;
-- the SLX has no shipped PrusaSlicer profile. It is treated like the SL1S — the
-  machine it succeeds — until Prusa publishes one.
+- the SL1 and SL1S printer profiles declare `display_orientation: portrait`, so
+  their layers are a quarter turn counter-clockwise of DragonFruit's frame. The
+  SL1 profile declares no mirror (`mirrorY` **off**); the SL1S declares
+  `display_mirror_x = 1`, which cancels the implicit X mirror the rotation adds,
+  i.e. one further flip of the frame (`mirrorY` **on**);
+- the SLX profile is landscape. A file PrusaSlicer 2.9.6 wrote for it has
+  7680 × 4320 layers, which is the plate as-is: no rotation, no mirror
+  (`mirrorY` **off**).
 
-That is why `mirrorY` differs between the presets: it is the rotation convention,
-not a hardware difference the user can see. The encoder always rotates a quarter
-turn counter-clockwise; `mirrorX` stays off everywhere.
+That is why `mirrorY` differs between the presets: it is the raster convention,
+not a hardware difference the user can see. `mirrorX` stays off everywhere, and
+the encoder rotates only the portrait machines. An SLX written portrait prints a
+quarter turn out.
 
 ## `config.ini`
 
@@ -79,8 +84,8 @@ The keys PrusaSlicer and UVtools both write, and the ones this encoder writes:
 | `jobDir` | archive name; also the layer-entry prefix |
 | `layerHeight` | layer step, mm |
 | `numFade` | layers fading from `expTimeFirst` to `expTime`, capped at the firmware's 20 |
-| `numFast` | layers in the firmware's fast tilt profile; every layer here, since the tilt is not modelled |
-| `numSlow` | `0` |
+| `numFast` | layers the firmware runs the fast tilt profile on: the first `numFade + 3`, then any layer whose area is at most 35 % of the display |
+| `numSlow` | the rest; the two counts add up to the layer count, as PrusaSlicer's do |
 | `printTime` | `0`, unknown; the firmware runs its own motion profile |
 | `printerModel` | `SL1`, `SL1S` or `SLX` |
 | `printerVariant` | `default` |
@@ -100,7 +105,9 @@ no stem, as on the in-memory encode path).
 - **Shell thumbnails** (`outputFileTypes.json`). The native thumbnail providers read
   a chunk-table grammar; a ZIP's preview is behind a central directory they cannot
   describe yet, so `.sl1` files keep the generic icon.
-- **Tilt/exposure profiles** (`config.json`). See above: not modelled, not invented.
+- **`prusaslicer.ini` / `prusaslicer.json`.** PrusaSlicer's full configuration dump;
+  no reader of the print needs it, and reproducing its hundreds of keys would be a
+  second configuration schema.
 
 ## Sources
 

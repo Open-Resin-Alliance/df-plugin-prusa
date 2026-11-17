@@ -94,12 +94,23 @@ impl Sl1RleStreamEncoder {
 }
 
 /// One layer: runs in, portrait PNG out.
-fn encode_layer(job: &SliceJobV3, runs: &[RleRun]) -> Result<Vec<u8>, SlicerV3Error> {
+fn encode_layer(job: &SliceJobV3, model: Sl1Model, runs: &[RleRun]) -> Result<Vec<u8>, SlicerV3Error> {
     let width = job.effective_render_width_px();
     let height = job.source_height_px;
-    // A binary layer is read straight off the runs, which never materialises the
-    // frame. Anti-aliased layers need their pixels, because a run encoder cannot
-    // express the gradient; only those pay for the buffer.
+    if !model.stores_portrait_layers() {
+        // The SLX stores the plate exactly as the engine rasterised it, so its
+        // layers are the engine's runs straight into the run-based PNG writer -
+        // the same path Athena's layers take.
+        return crate::encode::encode_grayscale_png_from_rle(
+            width,
+            height,
+            runs,
+            &job.png_compression_strategy,
+            job.produces_binary_output(),
+        );
+    }
+    // Portrait machines: a binary layer is rolled off the runs, which never
+    // materialises the frame; anti-aliased layers need their pixels.
     encode_portrait_png_from_runs(
         width,
         height,
@@ -116,7 +127,7 @@ impl RleStreamEncoder for Sl1RleStreamEncoder {
         runs: Vec<crate::rle::RleRun>,
     ) -> Result<(), SlicerV3Error> {
         // Encode now so the runs and the layer buffer are dropped immediately.
-        let png = encode_layer(&self.job, &runs)?;
+        let png = encode_layer(&self.job, self.model, &runs)?;
         self.layers[layer_index as usize] = png;
         Ok(())
     }
@@ -131,8 +142,9 @@ impl RleStreamEncoder for Sl1RleStreamEncoder {
         Arc<dyn Fn(u32, &[crate::rle::RleRun]) -> Result<Vec<u8>, SlicerV3Error> + Send + Sync>,
     > {
         let job = self.job.clone();
+        let model = self.model;
         Some(Arc::new(move |_layer_index: u32, runs: &[RleRun]| {
-            encode_layer(&job, runs)
+            encode_layer(&job, model, runs)
         }))
     }
 
@@ -192,13 +204,7 @@ fn write_archive<W: Write + Seek>(
         )));
     }
 
-    // PrusaSlicer's own statistics: the cured area of every layer, times the layer
-    // step. Supports and rafts are part of the mask, so they are counted.
-    let cured_area_mm2: f64 = area_stats
-        .iter()
-        .map(|stats| stats.total_solid_area_mm2)
-        .sum();
-    let config = Sl1Config::from_job(job, model, job_dir, cured_area_mm2);
+    let config = Sl1Config::from_job(job, model, job_dir, area_stats);
 
     let mut zip = ZipWriter::new(writer);
     // Deflate levels are 1..=9; a job built without assembly carries 0, which the
@@ -215,6 +221,13 @@ fn write_archive<W: Write + Seek>(
 
     start_entry(&mut zip, "config.ini", options)?;
     zip.write_all(config.render(model).as_bytes())?;
+
+    // The SLX firmware reads its peel profile from `config.json`; PrusaSlicer
+    // writes it for its own SLX jobs, and the file is not needed by the SL1/SL1S.
+    if !model.stores_portrait_layers() {
+        start_entry(&mut zip, "config.json", options)?;
+        zip.write_all(config.render_json(model).as_bytes())?;
+    }
 
     for (index, png) in layers.iter().enumerate() {
         start_entry(&mut zip, &format!("{job_dir}{index:05}.png"), options)?;
@@ -310,16 +323,27 @@ impl FormatEncoder for Sl1Encoder {
         let width = job.effective_render_width_px();
         let height = job.source_height_px;
         let mut layers = Vec::with_capacity(layer_pngs.len());
+        let model = self.model_for(job);
         for png_bytes in layer_pngs {
             let pixels = decode_grayscale_layer(png_bytes, width, height)?;
             let runs = runs_from_pixels(&pixels);
-            layers.push(encode_portrait_png_from_runs(
-                width,
-                height,
-                &runs,
-                &job.png_compression_strategy,
-                job.produces_binary_output(),
-            )?);
+            if model.stores_portrait_layers() {
+                layers.push(encode_portrait_png_from_runs(
+                    width,
+                    height,
+                    &runs,
+                    &job.png_compression_strategy,
+                    job.produces_binary_output(),
+                )?);
+            } else {
+                layers.push(crate::encode::encode_grayscale_png_from_rle(
+                    width,
+                    height,
+                    &runs,
+                    &job.png_compression_strategy,
+                    job.produces_binary_output(),
+                )?);
+            }
         }
 
         let mut cursor = Cursor::new(Vec::<u8>::new());
@@ -544,6 +568,69 @@ mod tests {
         assert_eq!((width, height), (16, 32), "layers are stored portrait");
 
         std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn the_engine_writes_an_slx_job_landscape_with_its_exposure_profile() {
+        let mut slx = job(4, "slx");
+        slx.source_width_px = 32;
+        slx.source_height_px = 16;
+        slx.width_px = 32;
+        slx.height_px = 16;
+        slx.build_width_mm = 220.0;
+        slx.build_depth_mm = 125.0;
+        slx.mirror_y = false;
+        slx.metadata_json = "{}".to_string();
+        slx.triangles_xyz = cube_triangles(0.5, 0.2);
+
+        let artifact = crate::engine::slice_with_progress_v3(&slx, None, None).expect("slice");
+        let slx_entries = entries(&artifact.bytes);
+        let names: Vec<&str> = slx_entries.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "config.ini",
+                "config.json",
+                "print00000.png",
+                "print00001.png",
+                "print00002.png",
+                "print00003.png",
+            ]
+        );
+
+        let config = String::from_utf8(slx_entries[0].1.clone()).expect("config");
+        assert!(config.contains("printerModel = SLX\n"), "{config}");
+        let json: serde_json::Value =
+            serde_json::from_slice(&slx_entries[1].1).expect("config.json is valid json");
+        assert_eq!(json["printerModel"], "SLX");
+        assert_eq!(json["version"], 2);
+        assert_eq!(json["exposure_profile"]["area_fill"], 35);
+
+        let (width, height) = {
+            let decoder = png::Decoder::new(slx_entries[2].1.as_slice());
+            let reader = decoder.read_info().expect("layer png");
+            let info = reader.info();
+            (info.width, info.height)
+        };
+        assert_eq!((width, height), (32, 16), "SLX layers are stored landscape");
+
+        // The SL1S, whose layers are portrait, must not grow a config.json.
+        let mut sl1s = job(1, "sl1s");
+        sl1s.source_width_px = 32;
+        sl1s.source_height_px = 16;
+        sl1s.width_px = 32;
+        sl1s.height_px = 16;
+        sl1s.triangles_xyz = cube_triangles(0.5, 0.2);
+        let artifact = crate::engine::slice_with_progress_v3(&sl1s, None, None).expect("slice");
+        let sl1s_entries = entries(&artifact.bytes);
+        assert!(sl1s_entries.iter().all(|(name, _)| name != "config.json"));
+        let (width, height) = {
+            let decoder = png::Decoder::new(sl1s_entries[1].1.as_slice());
+            let reader = decoder.read_info().expect("layer png");
+            let info = reader.info();
+            (info.width, info.height)
+        };
+        assert_eq!((width, height), (16, 32), "SL1S layers are stored portrait");
     }
 
     #[test]

@@ -28,7 +28,7 @@ use std::path::Path;
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use crate::types::SliceJobV3;
+use crate::types::{LayerAreaStatsV3, SliceJobV3};
 
 use super::sl1_types::Sl1Model;
 
@@ -43,6 +43,10 @@ pub(super) struct Sl1Config {
     /// `expUserProfile`: 0 fast, 1 slow, 2 custom.
     pub exp_user_profile: u32,
     pub total_layers: u32,
+    /// Layers the firmware runs its fast tilt profile on.
+    pub fast_layers: u32,
+    /// Layers it runs the slow profile on.
+    pub slow_layers: u32,
     pub used_material_ml: f64,
     pub material_name: String,
     pub slicer_version: String,
@@ -50,13 +54,15 @@ pub(super) struct Sl1Config {
 }
 
 impl Sl1Config {
-    /// Read the job's settings for `model`, with `cured_area_mm2` the summed
-    /// solid area of every layer.
+    /// Read the job's settings for `model`.
+    ///
+    /// `area_stats` is the engine's per-layer solid area, which decides both the
+    /// cured volume and the fast/slow layer split the printer's time estimate uses.
     pub(super) fn from_job(
         job: &SliceJobV3,
         model: Sl1Model,
         job_dir: &str,
-        cured_area_mm2: f64,
+        area_stats: &[LayerAreaStatsV3],
     ) -> Self {
         let metadata: Value = serde_json::from_str(&job.metadata_json).unwrap_or(Value::Null);
         let defaults = model.defaults();
@@ -81,7 +87,9 @@ impl Sl1Config {
             _ => 0,
         };
 
-        let used_material_ml = cured_area_mm2 * layer_height_mm / 1000.0;
+        let (fast_layers, slow_layers) = fast_slow_split(job, faded_layers, area_stats);
+        let surface_area_mm2: f64 = area_stats.iter().map(|stats| stats.total_solid_area_mm2).sum();
+        let used_material_ml = surface_area_mm2 * layer_height_mm / 1000.0;
 
         Self {
             job_dir: job_dir.to_string(),
@@ -91,6 +99,8 @@ impl Sl1Config {
             faded_layers,
             exp_user_profile,
             total_layers: job.total_layers,
+            fast_layers,
+            slow_layers,
             used_material_ml,
             material_name: text_at(&metadata, &["material", "name"]).unwrap_or_default(),
             slicer_version: text_at(&metadata, &["slicer", "version"])
@@ -113,8 +123,8 @@ impl Sl1Config {
             ("jobDir".into(), self.job_dir.clone()),
             ("layerHeight".into(), number(self.layer_height_mm)),
             ("numFade".into(), self.faded_layers.to_string()),
-            ("numFast".into(), self.total_layers.to_string()),
-            ("numSlow".into(), "0".into()),
+            ("numFast".into(), self.fast_layers.to_string()),
+            ("numSlow".into(), self.slow_layers.to_string()),
             ("printTime".into(), "0".into()),
             ("printerModel".into(), model.token().into()),
             ("printerVariant".into(), "default".into()),
@@ -135,6 +145,115 @@ impl Sl1Config {
         }
         out
     }
+}
+
+impl Sl1Config {
+    /// `config.json`: the same values as `config.ini`, typed, plus the exposure
+    /// profile PrusaSlicer writes alongside it.
+    ///
+    /// The SLX is the machine whose firmware reads this file; the SL1 and SL1S run
+    /// without it (UVtools has written accepted SL1S files for years with only
+    /// `config.ini`), so this is only emitted for the SLX.
+    pub(super) fn render_json(&self, model: Sl1Model) -> String {
+        let mut material_name = Value::Null;
+        if !self.material_name.is_empty() {
+            material_name = Value::String(self.material_name.clone());
+        }
+        let value = serde_json::json!({
+            "action": "print",
+            "expTime": self.exposure_sec,
+            "expTimeFirst": self.initial_exposure_sec,
+            "expUserProfile": self.exp_user_profile,
+            "fileCreationTimestamp": self.timestamp,
+            "hollow": 0,
+            "jobDir": self.job_dir,
+            "layerHeight": self.layer_height_mm,
+            "materialName": material_name,
+            "numFade": self.faded_layers,
+            "numFast": self.fast_layers,
+            "numSlow": self.slow_layers,
+            "printTime": 0,
+            "printerModel": model.token(),
+            "printerVariant": "default",
+            "prusaSlicerVersion": self.slicer_version,
+            "usedMaterial": round_to(self.used_material_ml, 6),
+            "version": 2,
+            "exposure_profile": exposure_profile(),
+        });
+        serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+/// PrusaSlicer's fast/slow layer rule (`SLAPrintSteps::create_stats`): the first
+/// `faded_layers + 3` layers are always fast, and a later layer is fast when its
+/// area is at most 35 % of the display. The firmware uses the split for its time
+/// estimate, which is why the two counts add up to the layer count.
+fn fast_slow_split(
+    job: &SliceJobV3,
+    faded_layers: u32,
+    area_stats: &[LayerAreaStatsV3],
+) -> (u32, u32) {
+    if area_stats.is_empty() {
+        return (job.total_layers, 0);
+    }
+    let display_area_mm2 =
+        f64::from(job.build_width_mm) * f64::from(job.build_depth_mm) * AREA_FILL_FRACTION;
+    let always_fast = faded_layers + 3;
+    let mut fast = 0u32;
+    let mut slow = 0u32;
+    for (index, stats) in area_stats.iter().enumerate() {
+        if (index as u32) < always_fast || stats.total_solid_area_mm2 <= display_area_mm2 {
+            fast += 1;
+        } else {
+            slow += 1;
+        }
+    }
+    (fast, slow)
+}
+
+/// The material's area-fill threshold (`area_fill`), 35 % in every Prusa SLA preset.
+const AREA_FILL_FRACTION: f64 = 0.35;
+
+/// The tilt/exposure profile the SLX reads from `config.json`.
+///
+/// Lifted from a job PrusaSlicer 2.9.6 wrote for the SLX, because Prusa has not
+/// published the SLX printer profile these values come from. They describe the
+/// machine's peel, not the resin, so they are the same for every print; the
+/// exposures in `config.ini` are what the user's material page controls.
+fn exposure_profile() -> Value {
+    serde_json::json!({
+        "area_fill": 35,
+        "printing_temperature": null,
+        "below_area_fill": tilt_profile(7000),
+        "above_area_fill": tilt_profile(10000),
+    })
+}
+
+fn tilt_profile(delay_before_exposure_ms: u32) -> Value {
+    serde_json::json!({
+        "delay_before_exposure_ms": delay_before_exposure_ms,
+        "delay_after_exposure_ms": 0,
+        "delay_to_reflood_ms": 0,
+        "tower_hop_height_nm": 0,
+        "tower_profile": "layer22",
+        "use_tilt": true,
+        "tilt_down_initial_profile": "layer7360",
+        "tilt_down_offset_steps": 0,
+        "tilt_down_offset_delay_ms": 0,
+        "tilt_down_finish_profile": "layer7360",
+        "tilt_down_cycles": 1,
+        "tilt_down_delay_ms": 0,
+        "tilt_up_initial_profile": "layer7360",
+        "tilt_up_offset_steps": 600,
+        "tilt_up_offset_delay_ms": 0,
+        "tilt_up_finish_profile": "layer7360",
+        "tilt_up_cycles": 1,
+        "tilt_up_delay_ms": 0,
+        "dynamic_delay_before_profile": "neg0_2",
+        "dynamic_delay_before_timeout_ms": 50000,
+        "dynamic_tilt_down_profile": "disabled",
+        "dynamic_tilt_up_profile": "disabled",
+    })
 }
 
 /// The name the printer shows and the one every layer image is prefixed with.
@@ -182,6 +301,11 @@ fn timestamp(now: OffsetDateTime) -> String {
 /// (`0.05`, `2.2`, `45`).
 fn number(value: f64) -> String {
     decimal(value, 6)
+}
+
+fn round_to(value: f64, places: u32) -> f64 {
+    let factor = 10f64.powi(places as i32);
+    (value * factor).round() / factor
 }
 
 fn decimal(value: f64, places: usize) -> String {
@@ -244,7 +368,7 @@ mod tests {
                 "bottomExposureSec":7,"bottomLayerCount":12,"name":"Prusament Model Grey"},
                 "prusa":{"expUserProfile":"1"},"slicer":{"version":"0.1.15"}}"#,
         );
-        let config = Sl1Config::from_job(&job, Sl1Model::Sl1s, "bench", 0.0);
+        let config = Sl1Config::from_job(&job, Sl1Model::Sl1s, "bench", &[]);
         let ini = config.render(Sl1Model::Sl1s);
 
         assert!(ini.contains("layerHeight = 0.025\n"), "{ini}");
@@ -264,12 +388,12 @@ mod tests {
     #[test]
     fn falls_back_to_the_models_stock_exposures() {
         let job = job("{}");
-        let sl1 = Sl1Config::from_job(&job, Sl1Model::OriginalSl1, "print", 0.0).render(Sl1Model::OriginalSl1);
+        let sl1 = Sl1Config::from_job(&job, Sl1Model::OriginalSl1, "print", &[]).render(Sl1Model::OriginalSl1);
         assert!(sl1.contains("expTime = 12\n"), "{sl1}");
         assert!(sl1.contains("expTimeFirst = 45\n"), "{sl1}");
         assert!(sl1.contains("printerModel = SL1\n"), "{sl1}");
 
-        let slx = Sl1Config::from_job(&job, Sl1Model::Slx, "print", 0.0).render(Sl1Model::Slx);
+        let slx = Sl1Config::from_job(&job, Sl1Model::Slx, "print", &[]).render(Sl1Model::Slx);
         assert!(slx.contains("expTime = 2.2\n"), "{slx}");
         assert!(slx.contains("printerModel = SLX\n"), "{slx}");
     }
@@ -277,7 +401,7 @@ mod tests {
     #[test]
     fn caps_the_fade_at_the_printers_limit_and_never_exceeds_the_layer_count() {
         let job = job(r#"{"material":{"bottomLayerCount":40}}"#);
-        let config = Sl1Config::from_job(&job, Sl1Model::Sl1s, "print", 0.0);
+        let config = Sl1Config::from_job(&job, Sl1Model::Sl1s, "print", &[]);
         let ini = config.render(Sl1Model::Sl1s);
         assert!(ini.contains("numFade = 20\n"), "{ini}");
         assert!(ini.contains("numFast = 100\n"), "{ini}");
@@ -287,9 +411,75 @@ mod tests {
     fn used_material_is_the_cured_volume() {
         // One full 128x81 mm plate at 0.05 mm is 128*81*0.05 mm3 = 518.4 mm3 = 0.5184 ml.
         let job = job("{}");
-        let config = Sl1Config::from_job(&job, Sl1Model::Sl1s, "print", 128.0 * 81.0);
+        let stats = [LayerAreaStatsV3 {
+            total_solid_area_mm2: 128.0 * 81.0,
+            ..LayerAreaStatsV3::default()
+        }];
+        let config = Sl1Config::from_job(&job, Sl1Model::Sl1s, "print", &stats);
         let ini = config.render(Sl1Model::Sl1s);
         assert!(ini.contains("usedMaterial = 0.5184\n"), "{ini}");
+    }
+
+    #[test]
+    fn the_fast_slow_split_follows_prusaslicers_area_rule() {
+        let stats_for = |area_mm2: f64, layers: usize| -> Vec<LayerAreaStatsV3> {
+            (0..layers)
+                .map(|_| LayerAreaStatsV3 {
+                    total_solid_area_mm2: area_mm2,
+                    ..LayerAreaStatsV3::default()
+                })
+                .collect()
+        };
+        let render = |stats: Vec<LayerAreaStatsV3>, layers: u32| {
+            Sl1Config::from_job(
+                &SliceJobV3 {
+                    total_layers: layers,
+                    build_width_mm: 220.0,
+                    build_depth_mm: 125.0,
+                    ..job("{\"material\":{\"bottomLayerCount\":1}}")
+                },
+                Sl1Model::Slx,
+                "print",
+                &stats,
+            )
+            .render(Sl1Model::Slx)
+        };
+
+        // Layers inside `faded + 3` are fast whatever their area.
+        let all_fast = render(stats_for(20_000.0, 4), 4);
+        assert!(all_fast.contains("numFast = 4\n"), "{all_fast}");
+        assert!(all_fast.contains("numSlow = 0\n"), "{all_fast}");
+
+        // Past that window, 20 000 mm2 is over 35 % of 220 x 125 mm and 2 000 is not.
+        let split = render(stats_for(20_000.0, 8), 8);
+        assert!(split.contains("numFast = 4\n"), "{split}");
+        assert!(split.contains("numSlow = 4\n"), "{split}");
+        let light = render(stats_for(2_000.0, 8), 8);
+        assert!(light.contains("numFast = 8\n"), "{light}");
+        assert!(light.contains("numSlow = 0\n"), "{light}");
+    }
+
+    #[test]
+    fn the_slx_config_json_carries_the_exposure_profile() {
+        let job = job("{}");
+        let stats = [LayerAreaStatsV3 {
+            total_solid_area_mm2: 100.0,
+            ..LayerAreaStatsV3::default()
+        }];
+        let config = Sl1Config::from_job(&job, Sl1Model::Slx, "print", &stats);
+        let json: serde_json::Value =
+            serde_json::from_str(&config.render_json(Sl1Model::Slx)).expect("valid json");
+        assert_eq!(json["printerModel"], "SLX");
+        assert_eq!(json["version"], 2);
+        assert_eq!(json["exposure_profile"]["area_fill"], 35);
+        assert_eq!(
+            json["exposure_profile"]["below_area_fill"]["tilt_up_offset_steps"],
+            600
+        );
+        // PrusaSlicer's `surface_area` is the mesh's surface, which an encoder
+        // does not have; writing the layer-area sum there would be a different
+        // quantity under the same name.
+        assert!(json.get("surface_area").is_none());
     }
 
     #[test]

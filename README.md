@@ -23,8 +23,9 @@ first one written for it; see [docs/FORMAT.md](docs/FORMAT.md) for exactly what 
   raster orientation, so the plate, the layer grid and the exported image line up.
 - **A native slicer encoder** for the Prusa SLA container, compiled into
   `dragonfruit-slicing-engine` through this repository's plugin registry entry. It takes
-  the engine's RLE streaming path: layers are encoded per layer on the workers, rotated
-  into the portrait image the printers store, and never held as full-image PNGs.
+  the engine's RLE streaming path: layers are encoded per layer on the workers,
+  rotated into the portrait image the SL1/SL1S store (the SLX takes them
+  landscape, as the engine rendered them), and never held as full-image PNGs.
 - **Per-machine resin pages** with Prusa's stock exposures as defaults (SL1 and SL1S) and
   the tilt speed profile selector the firmware reads from `config.ini`.
 
@@ -50,7 +51,7 @@ npm run generate:plugin-registry
 | `slicing/formats.json` | Extension list the registry generator validates |
 | `slicing/rust/encoder_impl.rs` | Native encoder: streaming sink, archive writer |
 | `slicing/rust/sl1_config.rs` | `config.ini` rendering |
-| `slicing/rust/sl1_png.rs` | Run expansion, portrait rotation, PNG assembly |
+| `slicing/rust/sl1_png.rs` | Portrait rotation by column sweep, PNG assembly |
 | `slicing/rust/sl1_thumbnail.rs` | The two preview images |
 | `docs/FORMAT.md` | Container details and the raster-orientation derivation |
 

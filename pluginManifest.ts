@@ -35,15 +35,15 @@ function withImagePaths(presets: Record<string, unknown>[]) {
  *
  * `mirrorY` is the raster orientation, not a hardware difference the user can see:
  * PrusaSlicer's SL1 profile stores the raster with the plate's front edge at the top
- * of the image, the SL1S/SLX profiles with it at the bottom. The encoder then
- * rotates every layer into the portrait image the printers store. See
- * `docs/FORMAT.md`.
+ * of the image, the SL1S profile with it at the bottom. Those two machines store
+ * portrait layers, so the encoder rotates them a quarter turn; the SLX stores
+ * landscape layers and takes the frame as-is. See `docs/FORMAT.md`.
  */
 export const PRUSA_PLUGIN_MANIFEST = {
   schemaVersion: 1,
   id: 'prusa-builtin',
   name: 'Prusa Research Plugin',
-  version: '0.1.1',
+  version: '0.1.2',
   description: 'Original Prusa SL1, SL1S SPEED and Prusa Pro SLX profiles and the Prusa SLA print container.',
   author: 'Open Resin Alliance',
   homepage: 'https://github.com/Open-Resin-Alliance/df-plugin-prusa',

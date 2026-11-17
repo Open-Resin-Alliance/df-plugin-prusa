@@ -25,6 +25,20 @@ impl Sl1Model {
         }
     }
 
+    /// Whether the machine stores its layers portrait (SL1, SL1S) or landscape
+    /// (SLX).
+    ///
+    /// Prusa's SL1 and SL1S printer profiles declare `display_orientation:
+    /// portrait`, so PrusaSlicer writes those layers a quarter turn from the plate;
+    /// the SLX profile is landscape and its layers are the plate as-is. A file
+    /// written the other way round prints rotated.
+    pub(super) fn stores_portrait_layers(self) -> bool {
+        match self {
+            Self::OriginalSl1 | Self::Sl1s => true,
+            Self::Slx => false,
+        }
+    }
+
     /// The machine a format version names, if it names one.
     ///
     /// `formatVersion` is the printer profile's own vocabulary (`sl1`, `sl1s`,

@@ -49,7 +49,9 @@ const EXPECTED = [
     resolution: { x: 7680, y: 4320 },
     formatVersion: 'slx',
     settingsMode: 'slx',
-    mirrorY: true,
+    // The SLX's layers are the plate as-is (PrusaSlicer's SLX profile is
+    // landscape), unlike the portrait SL1/SL1S.
+    mirrorY: false,
     extension: '.slx',
     asset: 'prusa-slx.png',
   },

@@ -30,7 +30,7 @@
       "formatVersion": "slx",
       "settingsMode": "slx",
       "mirrorX": false,
-      "mirrorY": true
+      "mirrorY": false
     }
   }
 ]
