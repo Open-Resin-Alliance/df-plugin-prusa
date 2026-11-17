@@ -1,0 +1,35 @@
+[
+  {
+    "presetId": "prusa-pro-slx",
+    "profileVersion": 1,
+    "manufacturer": "Prusa Research",
+    "family": "Prusa Pro SLX",
+    "name": "Prusa Pro SLX",
+    "antiAliasing": true,
+    "hasCamera": false,
+    "networkSupport": null,
+    "networkFilter": "Prusa Pro SLX",
+    "buildVolumeMm": {
+      "width": 220,
+      "depth": 125,
+      "height": 400
+    },
+    "pixelSize": {
+      "x": 28.65,
+      "y": 28.94
+    },
+    "bitDepth": {
+      "bits": 8,
+      "description": "8-bit grayscale 8K monochrome LCD, 256 grayscale levels for anti-aliasing"
+    },
+    "display": {
+      "resolutionX": 7680,
+      "resolutionY": 4320,
+      "outputFormat": ".sl1",
+      "formatVersion": "slx",
+      "settingsMode": "slx",
+      "mirrorX": false,
+      "mirrorY": true
+    }
+  }
+]

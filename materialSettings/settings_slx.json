@@ -1,0 +1,6 @@
+{
+  "$inherit": "sl1s",
+  "$update": {
+    "displayName": "Prusa Pro SLX Resin Settings"
+  }
+}

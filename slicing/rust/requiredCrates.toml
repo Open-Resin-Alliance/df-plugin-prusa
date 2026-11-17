@@ -1,0 +1,13 @@
+[dependencies]
+# No additional crates: the ZIP writer (zip), PNG reader/writer (png), zlib
+# compressor (libdeflater) and CRCs (crc32fast) this encoder uses are already
+# dragonfruit-slicing-engine dependencies.
+
+[optional-dependencies]
+
+[features]
+default = []
+
+[notes]
+purpose = "Prusa SLA container (.sl1/.sl1s/.slx): ZIP of portrait grayscale layer PNGs plus config.ini"
+minimum-rust = "1.75"

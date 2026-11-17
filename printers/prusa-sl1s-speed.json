@@ -1,0 +1,35 @@
+[
+  {
+    "presetId": "prusa-sl1s-speed",
+    "profileVersion": 1,
+    "manufacturer": "Prusa Research",
+    "family": "Original Prusa SL1S",
+    "name": "Original Prusa SL1S SPEED",
+    "antiAliasing": true,
+    "hasCamera": false,
+    "networkSupport": null,
+    "networkFilter": "Original Prusa SL1S SPEED",
+    "buildVolumeMm": {
+      "width": 128,
+      "depth": 81,
+      "height": 150
+    },
+    "pixelSize": {
+      "x": 50,
+      "y": 50
+    },
+    "bitDepth": {
+      "bits": 8,
+      "description": "8-bit grayscale monochrome LCD, 256 grayscale levels for anti-aliasing"
+    },
+    "display": {
+      "resolutionX": 2560,
+      "resolutionY": 1620,
+      "outputFormat": ".sl1",
+      "formatVersion": "sl1s",
+      "settingsMode": "sl1s",
+      "mirrorX": false,
+      "mirrorY": true
+    }
+  }
+]

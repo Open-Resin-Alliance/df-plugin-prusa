@@ -1,0 +1,76 @@
+{
+  "displayName": "Prusa SL1 Resin Settings",
+  "replacesDefaultMaterialSettings": true,
+  "tabs": [
+    { "id": "prusa", "title": "Prusa SLA", "order": 10 }
+  ],
+  "sections": [
+    { "id": "layers", "title": "Layers and Exposure", "tabId": "prusa", "order": 10 },
+    { "id": "speed", "title": "Printer Speed Profile", "tabId": "prusa", "order": 20 }
+  ],
+  "cards": [
+    { "id": "layers-card", "title": "Layers and Exposure", "tabId": "prusa", "sectionId": "layers", "order": 10 },
+    { "id": "speed-card", "title": "Printer Speed Profile", "tabId": "prusa", "sectionId": "speed", "order": 10 }
+  ],
+  "fields": [
+    {
+      "key": "layerHeightMm",
+      "label": "Layer Thickness (mm)",
+      "kind": "number",
+      "defaultValue": 0.05,
+      "min": 0.001,
+      "max": 1,
+      "step": 0.001,
+      "placement": { "tabId": "prusa", "sectionId": "layers", "cardId": "layers-card", "order": 10 },
+      "metadataPath": "material.layerHeightMm"
+    },
+    {
+      "key": "normalExposureSec",
+      "label": "Exposure Time (s)",
+      "kind": "number",
+      "defaultValue": 12,
+      "min": 0,
+      "max": 300,
+      "step": 0.001,
+      "placement": { "tabId": "prusa", "sectionId": "layers", "cardId": "layers-card", "order": 20 },
+      "metadataPath": "material.normalExposureSec"
+    },
+    {
+      "key": "bottomExposureSec",
+      "label": "Initial Exposure Time (s)",
+      "kind": "number",
+      "defaultValue": 45,
+      "min": 0,
+      "max": 300,
+      "step": 0.001,
+      "placement": { "tabId": "prusa", "sectionId": "layers", "cardId": "layers-card", "order": 30 },
+      "metadataPath": "material.bottomExposureSec"
+    },
+    {
+      "key": "bottomLayerCount",
+      "label": "Faded Layers",
+      "kind": "integer",
+      "defaultValue": 10,
+      "min": 0,
+      "max": 20,
+      "step": 1,
+      "description": "How many layers fade from the initial exposure to the normal exposure. The printer caps this at 20.",
+      "placement": { "tabId": "prusa", "sectionId": "layers", "cardId": "layers-card", "order": 40 },
+      "metadataPath": "material.bottomLayerCount"
+    },
+    {
+      "key": "expUserProfile",
+      "label": "Tilt Speed Profile",
+      "kind": "select",
+      "defaultValue": "0",
+      "options": [
+        { "value": "0", "label": "Fast" },
+        { "value": "1", "label": "Slow" },
+        { "value": "2", "label": "Custom" }
+      ],
+      "description": "Which tilt/exposure profile the printer's firmware runs. 'Fast' is what PrusaSlicer selects for the stock materials.",
+      "placement": { "tabId": "prusa", "sectionId": "speed", "cardId": "speed-card", "order": 10 },
+      "metadataPath": "prusa.expUserProfile"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "SL1": {
+    "extensions": [".sl1", ".sl1s", ".slx"],
+    "displayName": "Prusa SLA Format",
+    "version": "1.0",
+    "notes": "ZIP archive: config.ini plus one 8-bit grayscale PNG per layer. Written by PrusaSlicer for the Original Prusa SL1, SL1S SPEED and Prusa Pro SLX."
+  }
+}
