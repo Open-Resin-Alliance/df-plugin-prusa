@@ -201,24 +201,28 @@ fn write_archive<W: Write + Seek>(
     let config = Sl1Config::from_job(job, model, job_dir, cured_area_mm2);
 
     let mut zip = ZipWriter::new(writer);
-    // Layer PNGs are already deflated; a second deflate pass only costs time.
-    let layer_options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     // Deflate levels are 1..=9; a job built without assembly carries 0, which the
     // app never sends, so it means the fastest level rather than an invalid one.
-    let text_options = SimpleFileOptions::default()
+    //
+    // Every entry is deflated, layer PNGs included, which is what PrusaSlicer's own
+    // archive writer does. A layer the run writer produced is a fixed-Huffman deflate
+    // stream made almost entirely of repeated distance-1 matches, so a second pass
+    // over it costs a few milliseconds and shrinks it by two orders of magnitude:
+    // one 8K layer measured 216 KB stored against 2.9 KB deflated.
+    let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(i64::from(job.container_compression_level.clamp(1, 9))));
 
-    start_entry(&mut zip, "config.ini", text_options)?;
+    start_entry(&mut zip, "config.ini", options)?;
     zip.write_all(config.render(model).as_bytes())?;
 
     for (index, png) in layers.iter().enumerate() {
-        start_entry(&mut zip, &format!("{job_dir}{index:05}.png"), layer_options)?;
+        start_entry(&mut zip, &format!("{job_dir}{index:05}.png"), options)?;
         zip.write_all(png)?;
     }
 
     for (name, png) in sl1_thumbnail::thumbnails(job) {
-        start_entry(&mut zip, &name, layer_options)?;
+        start_entry(&mut zip, &name, options)?;
         zip.write_all(&png)?;
     }
 

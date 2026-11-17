@@ -15,6 +15,11 @@ archive
 └── thumbnail/thumbnail800x480.png     RGBA preview
 ```
 
+Every entry is deflated inside the ZIP, layer images included, which is what
+PrusaSlicer's own writer does. A layer the run writer produced is a fixed-Huffman
+deflate stream made almost entirely of repeated distance-1 matches, so the second
+pass costs a few milliseconds and shrinks one 8K layer from 216 KB to 2.9 KB.
+
 PrusaSlicer additionally writes `config.json` (its tilt/exposure profile) and
 `prusaslicer.ini` / `prusaslicer.json` (its full configuration dump). The firmware
 does not need them, and UVtools has written printer-accepted files without any of
