@@ -195,9 +195,11 @@ fn write_archive<W: Write + Seek>(
     let mut zip = ZipWriter::new(writer);
     // Layer PNGs are already deflated; a second deflate pass only costs time.
     let layer_options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    // Deflate levels are 1..=9; a job built without assembly carries 0, which the
+    // app never sends, so it means the fastest level rather than an invalid one.
     let text_options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(i64::from(job.container_compression_level.min(9))));
+        .compression_level(Some(i64::from(job.container_compression_level.clamp(1, 9))));
 
     start_entry(&mut zip, "config.ini", text_options)?;
     zip.write_all(config.render(model).as_bytes())?;
@@ -363,7 +365,10 @@ mod tests {
             extension: ".sl1",
             default_model: Sl1Model::OriginalSl1,
         };
-        let png = encode_portrait_png(8, 4, &[0u8; 32], "balanced").expect("layer");
+        // The fallback path receives the engine's landscape layers, not this
+        // encoder's portrait output.
+        let png = crate::encode::encode_grayscale_png_8bit(8, 4, &[0u8; 32], "balanced")
+            .expect("layer");
         let bytes = encoder
             .encode_container(&job, &[png.clone(), png], &[])
             .expect("archive");
@@ -441,7 +446,11 @@ mod tests {
             default_model: Sl1Model::OriginalSl1,
         };
         let bytes = encoder
-            .encode_container(&job, &[encode_portrait_png(8, 4, &[0u8; 32], "balanced").unwrap()], &[]);
+            .encode_container(
+                &job,
+                &[crate::encode::encode_grayscale_png_8bit(8, 4, &[0u8; 32], "balanced").unwrap()],
+                &[],
+            );
         assert!(matches!(
             bytes,
             Err(SlicerV3Error::MissingRenderedLayerPayload(_))
