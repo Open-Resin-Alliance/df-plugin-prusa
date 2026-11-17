@@ -5,6 +5,7 @@
     "manufacturer": "Prusa Research",
     "family": "Original Prusa SL1",
     "name": "Original Prusa SL1",
+    "imageAssetPath": "./assets/prusa-sl1.png",
     "antiAliasing": true,
     "hasCamera": false,
     "networkSupport": null,

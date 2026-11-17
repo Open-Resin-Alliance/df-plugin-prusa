@@ -27,6 +27,7 @@ const EXPECTED = [
     settingsMode: 'sl1',
     mirrorY: false,
     extension: '.sl1',
+    asset: 'prusa-sl1.png',
   },
   {
     presetId: 'prusa-sl1s-speed',
@@ -38,6 +39,7 @@ const EXPECTED = [
     settingsMode: 'sl1s',
     mirrorY: true,
     extension: '.sl1s',
+    asset: 'prusa-sl1s.png',
   },
   {
     presetId: 'prusa-pro-slx',
@@ -49,6 +51,7 @@ const EXPECTED = [
     settingsMode: 'slx',
     mirrorY: true,
     extension: '.slx',
+    asset: 'prusa-slx.png',
   },
 ];
 
@@ -67,6 +70,10 @@ test('the plugin exposes one preset per machine with its real geometry', () => {
     assert.equal(preset.display.settingsMode, expected.settingsMode);
     assert.equal(preset.display.mirrorY, expected.mirrorY);
     assert.equal(preset.display.mirrorX, false);
+    assert.equal(
+      preset.imageAssetPath,
+      `/api/profile-assets/plugins/prusa/printers/assets/${expected.asset}`,
+    );
 
     // Pitch x pixels must match the advertised volume; a mismatch means one was
     // changed without the other, which mis-scales every print.

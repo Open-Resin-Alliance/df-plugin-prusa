@@ -5,6 +5,7 @@
     "manufacturer": "Prusa Research",
     "family": "Original Prusa SL1S",
     "name": "Original Prusa SL1S SPEED",
+    "imageAssetPath": "./assets/prusa-sl1s.png",
     "antiAliasing": true,
     "hasCamera": false,
     "networkSupport": null,

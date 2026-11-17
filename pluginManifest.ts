@@ -4,6 +4,27 @@ import slxPrinters from './printers/prusa-pro-slx.json';
 import type { PrinterPreset } from '../../src/features/profiles/profileStore';
 
 /**
+ * Printer art is served by the app's profile-asset route, which resolves
+ * `/api/profile-assets/plugins/<folder>/...` inside this plugin's directory. The
+ * images are Prusa's own product shots, cropped square and reduced to the 320 px
+ * the profile cards use.
+ */
+function resolvePresetImagePath(imageAssetPath: unknown): string | undefined {
+  if (typeof imageAssetPath !== 'string' || !imageAssetPath.trim()) return undefined;
+  const trimmed = imageAssetPath.trim();
+  if (trimmed.startsWith('/') || trimmed.startsWith('http')) return trimmed;
+  const normalized = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed;
+  return `/api/profile-assets/plugins/prusa/printers/${normalized}`;
+}
+
+function withImagePaths(presets: Record<string, unknown>[]) {
+  return presets.map((preset) => ({
+    ...preset,
+    imageAssetPath: resolvePresetImagePath(preset.imageAssetPath),
+  }));
+}
+
+/**
  * The preset pack for the Prusa SLA family.
  *
  * Build volumes, display sizes and mirroring come from PrusaSlicer's own shipped
@@ -27,9 +48,9 @@ export const PRUSA_PLUGIN_MANIFEST = {
   author: 'Open Resin Alliance',
   homepage: 'https://github.com/Open-Resin-Alliance/df-plugin-prusa',
   printerPresets: [
-    ...sl1Printers,
-    ...sl1sPrinters,
-    ...slxPrinters,
+    ...withImagePaths(sl1Printers as Record<string, unknown>[]),
+    ...withImagePaths(sl1sPrinters as Record<string, unknown>[]),
+    ...withImagePaths(slxPrinters as Record<string, unknown>[]),
   ] as PrinterPreset[],
   materialTemplates: [],
 };

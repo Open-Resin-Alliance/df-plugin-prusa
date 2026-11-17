@@ -5,6 +5,7 @@
     "manufacturer": "Prusa Research",
     "family": "Prusa Pro SLX",
     "name": "Prusa Pro SLX",
+    "imageAssetPath": "./assets/prusa-slx.png",
     "antiAliasing": true,
     "hasCamera": false,
     "networkSupport": null,
